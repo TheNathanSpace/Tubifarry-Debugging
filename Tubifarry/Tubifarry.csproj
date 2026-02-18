@@ -28,7 +28,7 @@
 		<PackageReference Include="System.Text.Json" Version="8.0.6" GeneratePathProperty="true" />
 		<PackageReference Include="Xabe.FFmpeg" Version="6.0.2" />
 		<PackageReference Include="Xabe.FFmpeg.Downloader" Version="6.0.2" />
-		<PackageReference Include="YouTubeMusicAPI" Version="3.0.3" />
+		<PackageReference Include="YouTubeMusicAPI" Version="3.0.4" />
 		<PackageReference Include="YouTubeSessionGenerator" Version="1.0.3" />
 	</ItemGroup>
 	
@@ -56,9 +56,6 @@
 
 	<!-- Force copy System.Text.Json.dll to output directory for ILRepack -->
 	<Target Name="CopySystemTextJson" AfterTargets="Build">
-		<Copy
-			SourceFiles="$(PkgSystem_Text_Json)\lib\net8.0\System.Text.Json.dll"
-			DestinationFolder="$(OutputPath)"
-			SkipUnchangedFiles="true" />
+		<Copy SourceFiles="$(PkgSystem_Text_Json)\lib\net8.0\System.Text.Json.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" />
 	</Target>
 </Project>

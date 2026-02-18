@@ -264,7 +264,7 @@ namespace Tubifarry.Download.Clients.YouTube
             if (string.IsNullOrEmpty(poToken) || string.IsNullOrEmpty(contentBinding))
                 throw new TrustedSessionException("Received empty token values from bgutil service");
 
-            DateTime expiryDateTime = DateTime.Parse(expiresAtStr!);
+            DateTime expiryDateTime = DateTimeOffset.Parse(expiresAtStr!).UtcDateTime;
 
             SessionTokens sessionTokens = new(poToken, contentBinding, expiryDateTime, source);
             _logger.Trace($"Successfully fetched tokens from {source}. Expiry: {expiryDateTime}");

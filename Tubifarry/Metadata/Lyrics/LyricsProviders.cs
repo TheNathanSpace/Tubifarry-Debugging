@@ -34,7 +34,10 @@ namespace Tubifarry.Metadata.Lyrics
                 HttpResponseMessage response = await _httpClient.GetAsync(requestUri);
                 if (!response.IsSuccessStatusCode)
                 {
-                    _logger.Warn($"Failed to fetch lyrics from LRCLIB. Status: {response.StatusCode}");
+                    if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                        _logger.Debug($"No lyrics found on LRCLIB for track: {trackTitle} by {artistName}");
+                    else
+                        _logger.Debug($"Failed to fetch lyrics from LRCLIB. Status: {response.StatusCode}");
                     return null;
                 }
 

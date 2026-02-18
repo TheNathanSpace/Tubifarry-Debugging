@@ -48,6 +48,12 @@ namespace Tubifarry.Notifications.QueueCleaner
 
         public IFileInfo[] GetAudioFiles(string path, bool allDirectories = true)
         {
+            if (!_diskProvider.FolderExists(path))
+            {
+                _logger.Debug("Cannot get audio files: Directory does not exist: {0}", path);
+                return [];
+            }
+
             List<IFileInfo> filesOnDisk = _diskProvider.GetFileInfos(path, allDirectories);
             return filesOnDisk.Where(file => MediaFileExtensions.Extensions.Contains(file.Extension)).ToArray();
         }
@@ -131,7 +137,16 @@ namespace Tubifarry.Notifications.QueueCleaner
         {
             if (!item.DownloadItem.CanBeRemoved)
                 return;
-            foreach (IFileInfo file in (List<IFileInfo>)_diskProvider.GetFileInfos(item.DownloadItem.OutputPath.FullPath, true))
+
+            string downloadPath = item.DownloadItem.OutputPath.FullPath;
+            if (!_diskProvider.FolderExists(downloadPath))
+            {
+                _logger.Debug("Skipping file cleanup: Download directory no longer exists: {0}", downloadPath);
+                _eventAggregator.PublishEvent(new DownloadCanBeRemovedEvent(item));
+                return;
+            }
+
+            foreach (IFileInfo file in (List<IFileInfo>)_diskProvider.GetFileInfos(downloadPath, true))
                 _diskProvider.DeleteFile(file.FullName);
             _eventAggregator.PublishEvent(new DownloadCanBeRemovedEvent(item));
         }
@@ -144,7 +159,14 @@ namespace Tubifarry.Notifications.QueueCleaner
                 return false;
             }
 
-            List<IFileInfo> filesOnDisk = [.. _diskProvider.GetFileInfos(item.DownloadItem.OutputPath.FullPath, true)];
+            string downloadPath = item.DownloadItem.OutputPath.FullPath;
+            if (!_diskProvider.FolderExists(downloadPath))
+            {
+                _logger.Debug("Skipping rename: Download directory no longer exists: {0}", downloadPath);
+                return false;
+            }
+
+            List<IFileInfo> filesOnDisk = [.. _diskProvider.GetFileInfos(downloadPath, true)];
             HashSet<string> audioExtensions = new(MediaFileExtensions.Extensions, StringComparer.OrdinalIgnoreCase);
             ReleaseFormatter releaseFormatter = new(item.RemoteAlbum.Release, item.RemoteAlbum.Artist, _namingConfig.GetConfig());
 

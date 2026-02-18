@@ -66,7 +66,14 @@ namespace Tubifarry.Metadata.Proxy.MetadataProvider.SkyHook
             _skyHookProxy.SearchForNewAlbumByRecordingIds(recordingIds);
 
         public List<object> SearchForNewEntity(string title) =>
-            _skyHookProxy.SearchForNewEntity(title);
+            _skyHookProxy.SearchForNewEntity(ExtractLidarrId(title));
+
+        private static string ExtractLidarrId(string title)
+        {
+            if (string.IsNullOrWhiteSpace(title)) return title;
+            Match m = _musicBrainzRegex.Match(title);
+            return m.Success ? $"lidarr:{m.Groups[1].Value}" : title;
+        }
 
         public IHttpRequestBuilderFactory GetRequestBuilder()
         {

@@ -103,7 +103,7 @@ namespace Tubifarry.Indexers.Lucida
             {
                 foreach (string? code in codes)
                 {
-                    if (!services.Values.SelectMany(x => x).Any(c => string.Equals(c.Code, code, StringComparison.OrdinalIgnoreCase)))
+                    if (!services.Values.Where(x => x != null).SelectMany(x => x).Any(c => string.Equals(c.Code, code, StringComparison.OrdinalIgnoreCase)))
                         failures.Add(new ValidationFailure("CountryCode", $"Country code '{code}' is not valid for any service"));
                 }
             }
