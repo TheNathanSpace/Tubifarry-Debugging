@@ -1,5 +1,6 @@
 using Tubifarry.Indexers.Soulseek.Search.Core;
 using Tubifarry.Indexers.Soulseek.Search.Templates;
+using Tubifarry.Indexers.Soulseek.Search.Transformers;
 
 namespace Tubifarry.Indexers.Soulseek.Search.Strategies;
 
@@ -14,23 +15,26 @@ public sealed class TemplateSearchStrategy : SearchStrategyBase
     public override SearchTier Tier => SearchTier.Special;
     public override int Priority => 0;
 
-    public override bool IsEnabled(SlskdSettings settings) => 
+    public override bool IsEnabled(SlskdSettings settings) =>
         !string.IsNullOrWhiteSpace(settings.SearchTemplates);
 
-    public override bool CanExecute(SearchContext context, QueryType queryType) => 
+    public override bool CanExecute(SearchContext context, QueryType queryType) =>
         context.SearchCriteria != null;
 
     public override string? GetQuery(SearchContext context, QueryType queryType)
     {
         IReadOnlyList<string> templates = TemplateEngine.ParseTemplates(context.Settings.SearchTemplates);
-        
+
         foreach (string template in templates)
         {
             string? result = TemplateEngine.Apply(template, context.SearchCriteria);
             if (!string.IsNullOrWhiteSpace(result))
-                return result;
+            {
+                result = QueryBuilder.DeduplicateTerms(result);
+                return string.IsNullOrWhiteSpace(result) ? null : result;
+            }
         }
-        
+
         return null;
     }
 }

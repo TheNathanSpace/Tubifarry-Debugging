@@ -18,6 +18,42 @@ public static partial class QueryBuilder
     public static string Build(params string?[] parts) =>
         string.Join(" ", parts.Where(p => !string.IsNullOrWhiteSpace(p))).Trim();
 
+    public static string DeduplicateTerms(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return text ?? string.Empty;
+
+        string[] words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length < 2)
+            return text;
+
+        for (int seqLen = words.Length / 2; seqLen >= 1; seqLen--)
+        {
+            for (int i = 0; i <= words.Length - 2 * seqLen; i++)
+            {
+                bool match = true;
+                for (int j = 0; j < seqLen; j++)
+                {
+                    if (!words[i + j].Equals(words[i + seqLen + j], StringComparison.OrdinalIgnoreCase))
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (match)
+                {
+                    List<string> result = new List<string>(words.Length - seqLen);
+                    result.AddRange(words.Take(i + seqLen));
+                    result.AddRange(words.Skip(i + 2 * seqLen));
+                    return string.Join(" ", result);
+                }
+            }
+        }
+
+        return text;
+    }
+
     public static string BuildWildcard(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))

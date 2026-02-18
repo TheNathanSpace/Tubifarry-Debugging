@@ -25,6 +25,8 @@ namespace Tubifarry.Download.Clients.Soulseek
         private readonly IDownloadHistoryService _downloadService;
 
         private static readonly Dictionary<DownloadKey<int, string>, SlskdDownloadItem> _downloadMappings = [];
+        private static DateTime _lastCacheUpdateTime = DateTime.MinValue;
+        private const int CacheUpdateIntervalMs = 10000;
 
         public override string Name => "Slskd";
         public override string Protocol => nameof(SoulseekDownloadProtocol);
@@ -99,11 +101,32 @@ namespace Tubifarry.Download.Clients.Soulseek
 
         public override IEnumerable<DownloadClientItem> GetItems()
         {
-            UpdateDownloadItemsAsync().Wait();
-            DownloadClientItemClientInfo clientInfo = DownloadClientItemClientInfo.FromDownloadClient(this, false);
-            foreach (DownloadClientItem? clientItem in GetDownloadItems().Select(x => x.GetDownloadClientItem(GetRemoteToLocal(), Settings.GetTimeout())))
+            try
             {
-                clientItem.DownloadClientInfo = clientInfo;
+                UpdateDownloadItemsAsync().Wait();
+            }
+            catch (Exception ex)
+            {
+                _logger.Error(ex, "Failed to update download items from Slskd. Returning cached items.");
+            }
+
+            DownloadClientItemClientInfo clientInfo = DownloadClientItemClientInfo.FromDownloadClient(this, false);
+            OsPath remotePath = GetRemoteToLocal();
+            TimeSpan? timeout = Settings.GetTimeout();
+
+            foreach (SlskdDownloadItem downloadItem in GetDownloadItems())
+            {
+                DownloadClientItem? clientItem = null;
+                try
+                {
+                    clientItem = downloadItem.GetDownloadClientItem(remotePath, timeout);
+                    clientItem.DownloadClientInfo = clientInfo;
+                }
+                catch (Exception ex)
+                {
+                    _logger.Warn(ex, $"Failed to get download client item for {downloadItem.ID}. Skipping.");
+                    continue;
+                }
                 yield return clientItem;
             }
         }
@@ -178,6 +201,10 @@ namespace Tubifarry.Download.Clients.Soulseek
 
         private async Task UpdateDownloadItemsAsync()
         {
+            if ((DateTime.UtcNow - _lastCacheUpdateTime).TotalMilliseconds < CacheUpdateIntervalMs)
+                return;
+            _lastCacheUpdateTime = DateTime.UtcNow;
+
             HttpRequest request = BuildHttpRequest("/api/v0/transfers/downloads/");
             HttpResponse response = await ExecuteAsync(request);
             if (response.StatusCode != HttpStatusCode.OK)
@@ -202,10 +229,14 @@ namespace Tubifarry.Download.Clients.Soulseek
                         _logger.Trace($"Download item not found, checking history for {hash}");
                         DownloadHistory download = _downloadService.GetLatestGrab(hash);
                         if (download != null)
-                            AddDownloadItem(new SlskdDownloadItem(download.Release));
+                            item = new SlskdDownloadItem(download.Release);
                         else if (Settings.Inclusive)
-                            AddDownloadItem(new SlskdDownloadItem(CreateReleaseInfoFromDownloadDirectory(user.GetProperty("username").ToString(), dir)));
-                        continue;
+                            item = new SlskdDownloadItem(CreateReleaseInfoFromDownloadDirectory(user.GetProperty("username").ToString(), dir));
+
+                        if (item != null)
+                            AddDownloadItem(item);
+                        else
+                            continue;
                     }
                     item.Username ??= user.GetProperty("username").GetString()!;
                     item.SlskdDownloadDirectory = dir;

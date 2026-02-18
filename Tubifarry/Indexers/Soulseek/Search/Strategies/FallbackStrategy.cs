@@ -21,8 +21,18 @@ public sealed class WildcardStrategy : SearchStrategyBase
     public override string? GetQuery(SearchContext context, QueryType queryType)
     {
         string artistWildcard = QueryBuilder.BuildWildcard(context.SearchArtist);
-        string albumWildcard = QueryBuilder.BuildWildcard(context.SearchAlbum);
 
+        if (context.IsSelfTitled)
+        {
+            if (string.IsNullOrWhiteSpace(artistWildcard))
+                return null;
+
+            return context.HasValidYear
+                ? QueryBuilder.Build(artistWildcard, context.Year)
+                : artistWildcard;
+        }
+
+        string albumWildcard = QueryBuilder.BuildWildcard(context.SearchAlbum);
         return QueryBuilder.Build(artistWildcard, albumWildcard);
     }
 }
@@ -36,6 +46,7 @@ public sealed class PartialAlbumStrategy : SearchStrategyBase
     public override bool IsEnabled(SlskdSettings settings) => settings.UseFallbackSearch;
 
     public override bool CanExecute(SearchContext context, QueryType queryType) =>
+        !context.IsSelfTitled &&
         !string.IsNullOrWhiteSpace(context.SearchAlbum) && context.SearchAlbum.Length >= 15;
 
     public override string? GetQuery(SearchContext context, QueryType queryType)
@@ -116,12 +127,13 @@ public sealed class DistinctiveAlbumStrategy : SearchStrategyBase
     public override bool IsEnabled(SlskdSettings settings) => settings.UseFallbackSearch;
 
     public override bool CanExecute(SearchContext context, QueryType queryType) =>
+        !context.IsSelfTitled &&
         !string.IsNullOrWhiteSpace(context.SearchAlbum) && context.SearchAlbum.Length >= 10;
 
     public override string? GetQuery(SearchContext context, QueryType queryType)
     {
         string distinctive = QueryBuilder.ExtractDistinctive(context.SearchAlbum);
-        
+
         if (string.IsNullOrWhiteSpace(distinctive) ||
             distinctive.Equals(context.SearchAlbum, StringComparison.OrdinalIgnoreCase))
             return null;

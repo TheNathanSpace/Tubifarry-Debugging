@@ -39,7 +39,7 @@ public static partial class QueryNormalizer
 
         foreach (char c in decomposed)
         {
-            var category = CharUnicodeInfo.GetUnicodeCategory(c);
+            UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(c);
             if (category != UnicodeCategory.NonSpacingMark &&
                 category != UnicodeCategory.SpacingCombiningMark &&
                 category != UnicodeCategory.EnclosingMark)
@@ -49,8 +49,9 @@ public static partial class QueryNormalizer
         }
 
         string result = sb.ToString().Normalize(NormalizationForm.FormC);
-        
-        // Strip punctuation but keep letters, digits, spaces, hyphens, ampersands
+
+        // Then strip punctuation but keep letters, digits, spaces, hyphens, ampersands
+        result = PlusRegex().Replace(result, " ");
         result = PunctuationRegex().Replace(result, "");
         result = WhitespaceRegex().Replace(result, " ").Trim();
 
@@ -59,6 +60,9 @@ public static partial class QueryNormalizer
 
     [GeneratedRegex(@"[^\w\s\-&]", RegexOptions.Compiled)]
     private static partial Regex PunctuationRegex();
+
+    [GeneratedRegex(@"\+")]
+    private static partial Regex PlusRegex();
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
