@@ -116,7 +116,7 @@ namespace Tubifarry.Metadata.Lyrics
             _ => null
         };
 
-        public static void EmbedLyricsInAudioFile(string filePath, string lyrics, Logger logger, IRootFolderWatchingService rootFolderWatchingService)
+        public static bool EmbedLyricsInAudioFile(string filePath, string lyrics, Logger logger, IRootFolderWatchingService rootFolderWatchingService)
         {
             try
             {
@@ -127,10 +127,12 @@ namespace Tubifarry.Metadata.Lyrics
                     file.Save();
                 }
                 logger.Trace($"Embedded lyrics in file: {filePath}");
+                return true;
             }
             catch (Exception ex)
             {
                 logger.Error(ex, $"Failed to embed lyrics in file: {filePath}");
+                return false;
             }
         }
 

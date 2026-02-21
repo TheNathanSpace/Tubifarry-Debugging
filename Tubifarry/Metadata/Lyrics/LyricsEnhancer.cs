@@ -3,9 +3,11 @@ using NzbDrone.Common.Disk;
 using NzbDrone.Common.Extensions;
 using NzbDrone.Common.Instrumentation.Extensions;
 using NzbDrone.Core.Datastore;
+using NzbDrone.Core.Extras.Files;
 using NzbDrone.Core.Extras.Lyrics;
 using NzbDrone.Core.Extras.Metadata;
 using NzbDrone.Core.Extras.Metadata.Files;
+using NzbDrone.Core.Extras.Others;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.Messaging.Commands;
 using NzbDrone.Core.Messaging.Events;
@@ -23,6 +25,7 @@ namespace Tubifarry.Metadata.Lyrics
         private readonly IArtistService _artistService;
         private readonly IDiskProvider _diskProvider;
         private readonly TrackFileRepositoryHelper _trackFileRepositoryHelper;
+        private readonly IMediaFileService _mediaFileService;
 
         private LyricsProviders _lyricsProviders;
 
@@ -38,7 +41,9 @@ namespace Tubifarry.Metadata.Lyrics
             IDiskProvider diskProvider,
             IMainDatabase database,
             IEventAggregator eventAggregator,
-            ITrackRepository trackRepository)
+            ITrackRepository trackRepository,
+            IExtraFileService<OtherExtraFile> otherExtraFileService,
+            IMediaFileService mediaFileService)
         {
             _logger = logger;
             _httpClient = httpClient;
@@ -46,7 +51,8 @@ namespace Tubifarry.Metadata.Lyrics
             _lyricsProviders = new LyricsProviders(httpClient, logger, ActiveSettings);
             _artistService = artistService;
             _diskProvider = diskProvider;
-            _trackFileRepositoryHelper = new TrackFileRepositoryHelper(database, eventAggregator, trackRepository, lyricFileService, logger);
+            _mediaFileService = mediaFileService;
+            _trackFileRepositoryHelper = new TrackFileRepositoryHelper(database, eventAggregator, trackRepository, lyricFileService, otherExtraFileService, logger);
         }
 
         public override string Name => "Lyrics Enhancer";
@@ -183,7 +189,7 @@ namespace Tubifarry.Metadata.Lyrics
             _logger.Trace($"Created LRC file: {lrcPath}");
         }
 
-        private void EmbedLyrics(Lyric lyric, string trackFilePath)
+        private void EmbedLyrics(Lyric lyric, TrackFile trackFile)
         {
             LyricOptions embeddingOption = (LyricOptions)ActiveSettings.LyricEmbeddingOption;
             if (embeddingOption == LyricOptions.Disabled)
@@ -192,7 +198,23 @@ namespace Tubifarry.Metadata.Lyrics
             string? lyricsToEmbed = LyricsHelper.GetLyricsForEmbedding(lyric, embeddingOption);
             if (!string.IsNullOrWhiteSpace(lyricsToEmbed))
             {
-                LyricsHelper.EmbedLyricsInAudioFile(trackFilePath, lyricsToEmbed, _logger, _rootFolderWatchingService);
+                bool wasModified = LyricsHelper.EmbedLyricsInAudioFile(trackFile.Path, lyricsToEmbed, _logger, _rootFolderWatchingService);
+
+                if (wasModified && trackFile.Id > 0)
+                {
+                    try
+                    {
+                        FileInfo fileInfo = new(trackFile.Path);
+                        trackFile.Size = fileInfo.Length;
+                        trackFile.Modified = fileInfo.LastWriteTimeUtc;
+                        _mediaFileService.Update(trackFile);
+                        _logger.Debug($"Updated TrackFile metadata after embedding lyrics: Size={trackFile.Size}, Modified={trackFile.Modified:O}");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.Warn(ex, $"Failed to update TrackFile metadata after embedding lyrics: {trackFile.Path}");
+                    }
+                }
             }
         }
 
@@ -246,7 +268,7 @@ namespace Tubifarry.Metadata.Lyrics
             }
 
             // Embed lyrics into audio file based on settings
-            EmbedLyrics(lyric, trackFile.Path);
+            EmbedLyrics(lyric, trackFile);
 
             // Create LRC file content based on settings
             string? lrcContent = CreateLrcFileContent(lyric, trackInfo.Value);

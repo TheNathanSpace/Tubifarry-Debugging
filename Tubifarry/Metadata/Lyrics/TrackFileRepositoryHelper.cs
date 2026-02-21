@@ -1,7 +1,9 @@
 using Dapper;
 using NLog;
 using NzbDrone.Core.Datastore;
+using NzbDrone.Core.Extras.Files;
 using NzbDrone.Core.Extras.Lyrics;
+using NzbDrone.Core.Extras.Others;
 using NzbDrone.Core.MediaFiles;
 using NzbDrone.Core.Messaging.Events;
 using NzbDrone.Core.Music;
@@ -16,6 +18,7 @@ namespace Tubifarry.Metadata.Lyrics
     {
         private readonly ITrackRepository _trackRepository;
         private readonly ILyricFileService _lyricFileService;
+        private readonly IExtraFileService<OtherExtraFile> _otherExtraFileService;
         private readonly Logger _logger;
 
         public TrackFileRepositoryHelper(
@@ -23,11 +26,13 @@ namespace Tubifarry.Metadata.Lyrics
             IEventAggregator eventAggregator,
             ITrackRepository trackRepository,
             ILyricFileService lyricFileService,
+            IExtraFileService<OtherExtraFile> otherExtraFileService,
             Logger logger)
             : base(database, eventAggregator)
         {
             _trackRepository = trackRepository;
             _lyricFileService = lyricFileService;
+            _otherExtraFileService = otherExtraFileService;
             _logger = logger;
         }
 
@@ -110,6 +115,13 @@ namespace Tubifarry.Metadata.Lyrics
         {
             try
             {
+                OtherExtraFile? conflictingEntry = _otherExtraFileService.FindByPath(artist.Id, relativePath);
+                if (conflictingEntry != null)
+                {
+                    _logger.Warn($"Found .lrc file registered as OtherExtraFile (ID: {conflictingEntry.Id}), deleting conflicting entry to prevent deletion during re-imports: {relativePath}");
+                    _otherExtraFileService.Delete(conflictingEntry.Id);
+                }
+
                 LyricFile lyricFile = new()
                 {
                     ArtistId = artist.Id,
