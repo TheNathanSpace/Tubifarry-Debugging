@@ -19,9 +19,11 @@ namespace Tubifarry.Download.Clients.Lucida
     {
         private readonly ILucidaDownloadManager _downloadManager;
         private readonly INamingConfigService _namingService;
+        private readonly ILucidaRateLimiter _rateLimiter;
 
         public LucidaClient(
             ILucidaDownloadManager downloadManager,
+            ILucidaRateLimiter rateLimiter,
             IConfigService configService,
             IDiskProvider diskProvider,
             INamingConfigService namingConfigService,
@@ -32,6 +34,7 @@ namespace Tubifarry.Download.Clients.Lucida
         {
             _downloadManager = downloadManager;
             _namingService = namingConfigService;
+            _rateLimiter = rateLimiter;
         }
 
         public override string Name => "Lucida";
@@ -67,6 +70,41 @@ namespace Tubifarry.Download.Clients.Lucida
             {
                 failures.Add(new ValidationFailure("DownloadPath", "Download path is not writable"));
                 return;
+            }
+
+            TestWorkerHealth();
+        }
+
+        private void TestWorkerHealth()
+        {
+            try
+            {
+                IReadOnlyDictionary<string, LucidaWorkerState> states = _rateLimiter.GetWorkerStates();
+                List<KeyValuePair<string, LucidaWorkerState>> availableWorkers = states.Where(s => s.Value.IsAvailable).ToList();
+                List<KeyValuePair<string, LucidaWorkerState>> rateLimitedWorkers = [.. states.Where(s => s.Value.RateLimitedUntil.HasValue && s.Value.RateLimitedUntil.Value > DateTime.UtcNow)];
+
+                if (availableWorkers.Count == 0)
+                {
+                    _logger.Debug("No Lucida workers currently available, all may be rate limited");
+                    foreach (KeyValuePair<string, LucidaWorkerState> worker in rateLimitedWorkers)
+                    {
+                        TimeSpan remaining = worker.Value.RateLimitedUntil!.Value - DateTime.UtcNow;
+                        _logger.Debug($"  Worker '{worker.Key}' rate limited for {remaining.TotalSeconds:F0}s more");
+                    }
+                }
+                else
+                {
+                    _logger.Debug($"Lucida workers available: {availableWorkers.Count}/{states.Count}");
+                    foreach (KeyValuePair<string, LucidaWorkerState> state in states)
+                    {
+                        _logger.Trace($"  Worker '{state.Key}': available={state.Value.IsAvailable}, " +
+                                     $"active={state.Value.ActiveRequests}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.Debug(ex, "Failed to check Lucida worker health during test");
             }
         }
     }

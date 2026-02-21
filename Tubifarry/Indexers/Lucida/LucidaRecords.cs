@@ -481,7 +481,9 @@ namespace Tubifarry.Indexers.Lucida
         [property: JsonPropertyName("server")] string? Server = null,
         [property: JsonPropertyName("error")] string? Error = null,
         [property: JsonPropertyName("stats")] LucidaStatsResponse? Stats = null,
-        [property: JsonPropertyName("fromExternal")] bool FromExternal = false);
+        [property: JsonPropertyName("fromExternal")] bool FromExternal = false,
+        [property: JsonPropertyName("skipbo")] string? Skipbo = null,
+        [property: JsonPropertyName("skipboExpiration")] long SkipboExpiration = 0);
 
     /// <summary>
     /// Stats in download response
@@ -497,7 +499,8 @@ namespace Tubifarry.Indexers.Lucida
         [property: JsonPropertyName("success")] bool Success,
         [property: JsonPropertyName("status")] string? Status = null,
         [property: JsonPropertyName("name")] string? Name = null,
-        [property: JsonPropertyName("error")] string? Error = null);
+        [property: JsonPropertyName("error")] string? Error = null,
+        [property: JsonPropertyName("message")] string? Message = null);
 
     #endregion API Request/Response Models
 }

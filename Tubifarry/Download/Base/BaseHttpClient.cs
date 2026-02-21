@@ -238,25 +238,14 @@ namespace Tubifarry.Download.Base
         /// <exception cref="Exception">Thrown when the request fails</exception>
         public async Task<string> GetStringAsync(string url, CancellationToken cancellationToken = default)
         {
-            try
-            {
-                using HttpRequestMessage request = CreateRequest(HttpMethod.Get, url);
-                using HttpResponseMessage response = await SendAsync(request, cancellationToken);
-                response.EnsureSuccessStatusCode();
+            using HttpRequestMessage request = CreateRequest(HttpMethod.Get, url);
+            using HttpResponseMessage response = await SendAsync(request, cancellationToken);
+            response.EnsureSuccessStatusCode();
 
-                using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                cts.CancelAfter(_timeout);
+            using CancellationTokenSource cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(_timeout);
 
-                return await response.Content.ReadAsStringAsync(cts.Token);
-            }
-            catch (ObjectDisposedException)
-            {
-                throw new Exception($"HTTP GET request failed, connection was closed for URL '{url}'");
-            }
-            catch (Exception ex)
-            {
-                throw new Exception($"HTTP GET request failed for URL '{url}': {ex.Message}", ex);
-            }
+            return await response.Content.ReadAsStringAsync(cts.Token);
         }
 
         /// <summary>

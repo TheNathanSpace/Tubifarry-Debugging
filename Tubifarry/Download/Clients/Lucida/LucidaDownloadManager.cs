@@ -12,12 +12,16 @@ namespace Tubifarry.Download.Clients.Lucida
     /// <summary>
     /// Interface for the Lucida download manager
     /// </summary>
-    public interface ILucidaDownloadManager : IBaseDownloadManager<LucidaDownloadRequest, BaseDownloadOptions, LucidaClient>;
+    public interface ILucidaDownloadManager : IBaseDownloadManager<LucidaDownloadRequest, LucidaDownloadOptions, LucidaClient>;
 
     /// <summary>
     /// Lucida download manager using the base download manager implementation
     /// </summary>
-    public class LucidaDownloadManager(Logger logger, IEnumerable<IHttpRequestInterceptor> requestInterceptors) : BaseDownloadManager<LucidaDownloadRequest, BaseDownloadOptions, LucidaClient>(logger), ILucidaDownloadManager
+    public class LucidaDownloadManager(
+        Logger logger,
+        IEnumerable<IHttpRequestInterceptor> requestInterceptors,
+        ILucidaRateLimiter rateLimiter
+    ) : BaseDownloadManager<LucidaDownloadRequest, LucidaDownloadOptions, LucidaClient>(logger), ILucidaDownloadManager
     {
         protected override async Task<LucidaDownloadRequest> CreateDownloadRequest(
             RemoteAlbum remoteAlbum,
@@ -33,7 +37,7 @@ namespace Tubifarry.Download.Clients.Lucida
             bool isTrack = remoteAlbum.Release.Source == "track";
             _logger.Trace($"Type from Source field: {remoteAlbum.Release.Source} -> {(isTrack ? "Track" : "Album")}");
 
-            BaseDownloadOptions options = new()
+            LucidaDownloadOptions options = new()
             {
                 Handler = _requesthandler,
                 DownloadPath = provider.Settings.DownloadPath,
@@ -47,7 +51,8 @@ namespace Tubifarry.Download.Clients.Lucida
                 NumberOfAttempts = (byte)provider.Settings.ConnectionRetries,
                 ClientInfo = DownloadClientItemClientInfo.FromDownloadClient(provider, false),
                 IsTrack = isTrack,
-                ItemId = itemUrl
+                ItemId = itemUrl,
+                RateLimiter = rateLimiter
             };
 
             _requesthandler.MaxParallelism = provider.Settings.MaxParallelDownloads;

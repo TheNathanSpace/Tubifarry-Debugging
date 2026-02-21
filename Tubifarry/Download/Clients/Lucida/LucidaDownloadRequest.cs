@@ -16,15 +16,16 @@ namespace Tubifarry.Download.Clients.Lucida
     /// <summary>
     /// Lucida download request handling track and album downloads
     /// </summary>
-    public class LucidaDownloadRequest : BaseDownloadRequest<BaseDownloadOptions>
+    public class LucidaDownloadRequest : BaseDownloadRequest<LucidaDownloadOptions>
     {
         private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-        private static readonly Random _random = new();
         private readonly BaseHttpClient _httpClient;
+        private readonly ILucidaRateLimiter? _rateLimiter;
 
-        public LucidaDownloadRequest(RemoteAlbum remoteAlbum, BaseDownloadOptions? options) : base(remoteAlbum, options)
+        public LucidaDownloadRequest(RemoteAlbum remoteAlbum, LucidaDownloadOptions? options) : base(remoteAlbum, options)
         {
             _httpClient = new BaseHttpClient(Options.BaseUrl, Options.RequestInterceptors, TimeSpan.FromSeconds(Options.RequestTimeout));
+            _rateLimiter = options?.RateLimiter;
 
             _requestContainer.Add(new OwnRequest(async (token) =>
             {
@@ -97,10 +98,6 @@ namespace Tubifarry.Download.Clients.Lucida
             _expectedTrackCount = album.Tracks.Count;
             _logger.Trace($"Found {album.Tracks.Count} tracks in album: {album.Title}");
 
-            bool hasAnyValidTokens = album.Tracks.Any(t => t.HasValidTokens);
-            if (!hasAnyValidTokens && !album.HasValidTokens)
-                throw new Exception("Failed to extract authentication tokens from album page");
-
             for (int i = 0; i < album.Tracks.Count; i++)
             {
                 LucidaTrackModel track = album.Tracks[i];
@@ -119,11 +116,7 @@ namespace Tubifarry.Download.Clients.Lucida
                         continue;
                     }
 
-                    string primaryToken = track.PrimaryToken ?? album.PrimaryToken ?? string.Empty;
-                    string fallbackToken = track.FallbackToken ?? album.FallbackToken ?? string.Empty;
-                    long tokenExpiry = track.TokenExpiry > 0 ? track.TokenExpiry : album.TokenExpiry;
-
-                    InitiateDownload(trackUrl, primaryToken, fallbackToken, tokenExpiry, trackFileName, token);
+                    InitiateDownload(trackUrl, album.PrimaryToken!, album.FallbackToken!, album.TokenExpiry, trackFileName, token);
                     _logger.Trace($"Track {i + 1}/{album.Tracks.Count} completed: {track.Title}");
                 }
                 catch (Exception ex)
@@ -138,63 +131,34 @@ namespace Tubifarry.Download.Clients.Lucida
         {
             OwnRequest downloadRequestWrapper = new(async (t) =>
             {
-                const int maxReinitAttempts = 1;
-                string handoffId = null!;
-                string serverName = null!;
-
-                for (int reinitAttempt = 0; reinitAttempt <= maxReinitAttempts; reinitAttempt++)
+                LucidaInitiationResult initiation;
+                try
                 {
-                    await Task.Delay(_random.Next(500), t);
-
-                    try
-                    {
-                        (handoffId, serverName) = await InitiateDownloadRequestAsync(url, primaryToken, fallbackToken, expiry, t);
-                        _logger.Trace($"Initiation completed. Handoff: {handoffId}, Server: {serverName}");
-                    }
-                    catch (LucidaJobNotFoundException ex)
-                    {
-                        _logger.Debug($"Worker rate-limited during initiation (attempt {reinitAttempt}/{maxReinitAttempts}): {ex.Message}");
-                        if (reinitAttempt >= maxReinitAttempts)
-                        {
-                            LogAndAppendMessage($"Failed after {maxReinitAttempts} attempts (worker rate-limited)", LogLevel.Error);
-                            return false;
-                        }
-                        await Task.Delay(5000, t);
-                        continue;
-                    }
-                    catch (Exception ex)
-                    {
-                        LogAndAppendMessage($"Initiation failed: {ex.Message}", LogLevel.Error);
-                        return false;
-                    }
-
-                    try
-                    {
-                        if (!await PollForCompletionAsync(handoffId, serverName, t))
-                            return false;
-                        break;
-                    }
-                    catch (LucidaJobNotFoundException ex)
-                    {
-                        _logger.Debug($"Re-initializing download (attempt {reinitAttempt}/{maxReinitAttempts}) due to job not found: {ex.Message}");
-                        if (reinitAttempt >= maxReinitAttempts)
-                        {
-                            LogAndAppendMessage($"Failed after {maxReinitAttempts} re-initialization attempts", LogLevel.Error);
-                            return false;
-                        }
-                        await Task.Delay(2000, t);
-                        continue;
-                    }
-                    catch (Exception ex)
-                    {
-                        LogAndAppendMessage($"Polling failed: {ex.Message}", LogLevel.Error);
-                        return false;
-                    }
+                    initiation = await InitiateDownloadWithRetryAsync(
+                        url, primaryToken, fallbackToken, expiry, t);
+                    _logger.Trace($"Initiation completed. Handoff: {initiation.HandoffId}, Server: {initiation.ServerName}");
+                }
+                catch (Exception ex)
+                {
+                    LogAndAppendMessage($"Initiation failed after retries: {ex.Message}", LogLevel.Error);
+                    return false;
                 }
 
                 try
                 {
-                    string downloadUrl = $"{Options.BaseUrl}/api/load?url={Uri.EscapeDataString($"/api/fetch/request/{handoffId}/download")}&force={serverName}&redirect=true";
+                    if (!await PollForCompletionAsync(initiation.HandoffId, initiation.ServerName, t))
+                        return false;
+                }
+                catch (Exception ex)
+                {
+                    LogAndAppendMessage($"Polling failed: {ex.Message}", LogLevel.Error);
+                    return false;
+                }
+
+                try
+                {
+                    string domain = ExtractDomainFromUrl(Options.BaseUrl);
+                    string downloadUrl = $"https://{initiation.ServerName}.{domain}/api/fetch/request/{initiation.HandoffId}/download";
 
                     LoadRequest downloadRequest = new(downloadUrl, new LoadRequestOptions()
                     {
@@ -233,41 +197,133 @@ namespace Tubifarry.Download.Clients.Lucida
             _requestContainer.Add(downloadRequestWrapper);
         }
 
-        private async Task<(string handoffId, string serverName)> InitiateDownloadRequestAsync(string url, string primaryToken, string fallbackToken, long expiry, CancellationToken token)
+        private async Task<LucidaInitiationResult> InitiateDownloadWithRetryAsync(string url, string primaryToken, string fallbackToken, long expiry, CancellationToken token)
+        {
+            if (_rateLimiter == null)
+            {
+                _logger.Trace("No rate limiter configured, using direct request");
+                return await InitiateDownloadRequestAsync(url, primaryToken, fallbackToken, expiry, null, token);
+            }
+
+            int totalAttempts = 0;
+            string? lastWorker = null;
+
+            // Try different workers
+            for (int workerRetry = 0; workerRetry < ILucidaRateLimiter.MAX_WORKER_RETRIES; workerRetry++)
+            {
+                token.ThrowIfCancellationRequested();
+
+                string worker = await _rateLimiter.WaitForAvailableWorkerAsync(token);
+                totalAttempts++;
+                lastWorker = worker;
+
+                _logger.Trace($"Attempt {totalAttempts}: Using worker '{worker}' (retry {workerRetry + 1}/{ILucidaRateLimiter.MAX_WORKER_RETRIES})");
+
+                try
+                {
+                    LucidaInitiationResult result = await InitiateDownloadRequestAsync(url, primaryToken, fallbackToken, expiry, worker, token);
+                    _rateLimiter.ReleaseWorker(worker);
+                    _logger.Debug($"Download initiated successfully on worker '{worker}'");
+                    return result;
+                }
+                catch (LucidaRateLimitException)
+                {
+                    _rateLimiter.MarkWorkerRateLimited(worker);
+                    _logger.Debug($"Worker '{worker}' rate limited, trying different worker");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _rateLimiter.ReleaseWorker(worker);
+                    throw;
+                }
+            }
+
+            // All workers rate limited wait
+            _logger.Debug($"All workers rate limited, waiting {ILucidaRateLimiter.WAIT_ON_ALL_BLOCKED_MS}ms before retry");
+            await Task.Delay(ILucidaRateLimiter.WAIT_ON_ALL_BLOCKED_MS, token);
+
+            //Retry after waiting
+            for (int waitRetry = 0; waitRetry < ILucidaRateLimiter.MAX_WAIT_RETRIES; waitRetry++)
+            {
+                token.ThrowIfCancellationRequested();
+
+                string worker = await _rateLimiter.WaitForAvailableWorkerAsync(token);
+                totalAttempts++;
+                lastWorker = worker;
+
+                _logger.Trace($"Attempt {totalAttempts}: After wait, using worker '{worker}' (wait retry {waitRetry + 1}/{ILucidaRateLimiter.MAX_WAIT_RETRIES})");
+
+                try
+                {
+                    LucidaInitiationResult result = await InitiateDownloadRequestAsync(url, primaryToken, fallbackToken, expiry, worker, token);
+                    _rateLimiter.ReleaseWorker(worker);
+                    _logger.Debug($"Download initiated successfully on worker '{worker}' after wait");
+                    return result;
+                }
+                catch (LucidaRateLimitException)
+                {
+                    _rateLimiter.MarkWorkerRateLimited(worker);
+                    _logger.Debug($"Worker '{worker}' still rate limited after wait");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _rateLimiter.ReleaseWorker(worker);
+                    throw;
+                }
+            }
+
+            throw new Exception($"Failed to initiate download after {totalAttempts} attempts across all workers (last worker: {lastWorker})");
+        }
+
+        private async Task<LucidaInitiationResult> InitiateDownloadRequestAsync(
+            string url, string primaryToken, string fallbackToken, long expiry,
+            string? forcedWorker, CancellationToken token)
         {
             try
             {
                 LucidaDownloadRequestInfo request = LucidaDownloadRequestInfo.CreateWithTokens(url, primaryToken, fallbackToken, expiry);
                 string requestBody = JsonSerializer.Serialize(request, _jsonOptions);
 
-                const string apiEndpoint = "%2Fapi%2Ffetch%2Fstream%2Fv2";
-                string requestUrl = $"{_httpClient.BaseUrl}/api/load?url={apiEndpoint}";
-                _logger.Trace($"Initiating track download from URL: {url}, Request URL: {requestUrl}");
+                string apiEndpoint = "%2Fapi%2Ffetch%2Fstream%2Fv2";
+                if (!string.IsNullOrEmpty(forcedWorker))
+                    apiEndpoint += $"&force={forcedWorker}";
 
-                using HttpRequestMessage httpRequest = new(HttpMethod.Post, requestUrl);
+                string requestUrl = $"{_httpClient.BaseUrl}/api/load?url={apiEndpoint}";
+                _logger.Trace($"Initiating download from URL: {url}, Forced worker: {forcedWorker ?? "auto"}");
+
+                HttpRequestMessage httpRequest = new(HttpMethod.Post, requestUrl);
                 httpRequest.Headers.Add("Origin", _httpClient.BaseUrl);
                 httpRequest.Headers.Add("Referer", $"{_httpClient.BaseUrl}/?url={Uri.EscapeDataString(url)}");
-                httpRequest.Content = new StringContent(requestBody, Encoding.UTF8, "application/json");
+                httpRequest.Content = new StringContent(requestBody, Encoding.UTF8, "text/plain");
 
-                using HttpResponseMessage response = await _httpClient.PostAsync(httpRequest);
+                HttpResponseMessage response = await _httpClient.PostAsync(httpRequest);
                 string responseContent = await response.Content.ReadAsStringAsync(token);
                 response.EnsureSuccessStatusCode();
 
-                if (responseContent.StartsWith("{\"0\":\"<") || responseContent.Contains("\"0\":\"<\""))
-                {
-                    _logger.Debug($"Worker returned 404 during initiation (rate limited). Retrying...");
-                    throw new LucidaJobNotFoundException("initiation-failed", "rate-limited");
-                }
+                if (_rateLimiter?.IsRateLimitedResponse(responseContent) == true)
+                    throw new LucidaRateLimitException($"Rate limited on worker '{forcedWorker}'", forcedWorker);
 
                 LucidaDownloadResponse? downloadResponse = JsonSerializer.Deserialize<LucidaDownloadResponse>(responseContent, _jsonOptions);
 
                 if (downloadResponse?.Success == true && !string.IsNullOrEmpty(downloadResponse.Handoff))
-                    return (downloadResponse.Handoff, downloadResponse.Server ?? downloadResponse.Name ?? "hund");
+                {
+                    string serverName = downloadResponse.Server ?? downloadResponse.Name ?? forcedWorker ?? "hund";
 
-                string errorInfo = downloadResponse != null ? $"Success: {downloadResponse.Success}, Handoff: {downloadResponse.Handoff}, Server: {downloadResponse.Server}, Name: {downloadResponse.Name}, Error: {downloadResponse.Error}" : "Failed to deserialize response";
-                throw new Exception($"Failed to initiate download: {errorInfo ?? "no handoff ID received"}");
+                    _rateLimiter?.EnsureWorkerRegistered(serverName);
+
+                    return new LucidaInitiationResult
+                    {
+                        HandoffId = downloadResponse.Handoff,
+                        ServerName = serverName
+                    };
+                }
+
+                string errorInfo = downloadResponse != null
+                    ? $"Success: {downloadResponse.Success}, Handoff: {downloadResponse.Handoff}, Server: {downloadResponse.Server}, Name: {downloadResponse.Name}, Error: {downloadResponse.Error}"
+                    : "Failed to deserialize response";
+                throw new Exception($"Failed to initiate download: {errorInfo}");
             }
-            catch (LucidaJobNotFoundException)
+            catch (LucidaRateLimitException)
             {
                 throw;
             }
@@ -281,48 +337,53 @@ namespace Tubifarry.Download.Clients.Lucida
         private async Task<bool> PollForCompletionAsync(string handoffId, string serverName, CancellationToken token)
         {
             const int baseAttempts = 15;
-            int delayMs = 4000;
+            int delayMs = 5000;
             int serviceUnavailableExtensions = 1;
             const int maxServiceUnavailableExtensions = 20;
-            int consecutive404Count = 0;
-            const int maxConsecutive404s = 3;
 
             await Task.Delay(delayMs * 2, token);
 
             int totalAttempts = baseAttempts + (serviceUnavailableExtensions * 5);
+
             for (int attempt = 1; attempt <= totalAttempts; attempt++)
             {
                 if (token.IsCancellationRequested)
                     return false;
 
+                bool acquiredSlot = false;
                 try
                 {
-                    string statusUrl = $"{Options.BaseUrl}/api/load?url={Uri.EscapeDataString($"/api/fetch/request/{handoffId}")}&force={serverName}";
-                    string responseContent = await _httpClient.GetStringAsync(statusUrl, token);
-
-                    consecutive404Count = 0;
-
-                    LucidaStatusResponse? status = JsonSerializer.Deserialize<LucidaStatusResponse>(responseContent, _jsonOptions);
-
-                    if (status?.Success == true && status.Status == "completed")
-                        return true;
-
-                    if (!string.IsNullOrEmpty(status?.Error))
-                        throw new Exception($"Server error: {status.Error}");
-                }
-                catch (HttpRequestException httpEx) when (httpEx.StatusCode == System.Net.HttpStatusCode.NotFound)
-                {
-                    consecutive404Count++;
-                    _logger.Debug($"Job not found on worker (attempt {consecutive404Count}/{maxConsecutive404s}): {handoffId} on {serverName}");
-
-                    if (consecutive404Count >= maxConsecutive404s)
+                    if (_rateLimiter is not null)
                     {
-                        _logger.Warn($"Job {handoffId} was never registered on worker {serverName}. Re-initialization required.");
-                        throw new LucidaJobNotFoundException(handoffId, serverName);
+                        await _rateLimiter.AcquirePollingSlotAsync(serverName, token);
+                        acquiredSlot = true;
                     }
 
-                    await Task.Delay(1000, token);
-                    continue;
+                    string statusUrl = $"https://{serverName}.{ExtractDomainFromUrl(Options.BaseUrl)}/api/fetch/request/{handoffId}";
+                    string responseContent = await _httpClient.GetStringAsync(statusUrl, token);
+
+                    if (_rateLimiter?.IsRateLimitedResponse(responseContent) == true)
+                    {
+                        _logger.Debug($"Polling rate limited on worker '{serverName}', treating as transient");
+                    }
+                    else
+                    {
+                        LucidaStatusResponse? status = JsonSerializer.Deserialize<LucidaStatusResponse>(responseContent, _jsonOptions);
+
+                        if (status?.Success == true && status.Status == "completed")
+                            return true;
+
+                        if (!string.IsNullOrEmpty(status?.Error) && status.Error != "Request not found." && status.Error != "No such request")
+                            throw new Exception($"Server error: {status.Error}");
+
+                        if (!string.IsNullOrEmpty(status?.Status))
+                            _logger.Trace($"Poll {attempt}: status={status.Status}");
+                    }
+                }
+                catch (HttpRequestException httpEx) when (httpEx.StatusCode == System.Net.HttpStatusCode.InternalServerError)
+                {
+                    _logger.Error($"Polling failed with 500 Internal Server Error. Handoff ID may be invalid: {httpEx.Message}");
+                    throw new Exception($"Server internal error. Handoff ID invalid: {httpEx.Message}");
                 }
                 catch (HttpRequestException httpEx) when (httpEx.StatusCode == System.Net.HttpStatusCode.ServiceUnavailable)
                 {
@@ -335,9 +396,14 @@ namespace Tubifarry.Download.Clients.Lucida
                         continue;
                     }
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException && ex is not LucidaJobNotFoundException)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     _logger.Trace($"Polling attempt {attempt} failed: {ex.Message}");
+                }
+                finally
+                {
+                    if (acquiredSlot)
+                        _rateLimiter?.ReleasePollingSlot(serverName);
                 }
 
                 await Task.Delay(delayMs, token);
@@ -345,6 +411,13 @@ namespace Tubifarry.Download.Clients.Lucida
             }
 
             throw new Exception("Download did not complete within expected time");
+        }
+
+        private static string ExtractDomainFromUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url))
+                return "lucida.to";
+            return url.Replace("https://", "").Replace("http://", "").TrimEnd('/');
         }
 
         private Album CreateAlbumFromLucidaData(LucidaAlbumModel? albumInfo)
