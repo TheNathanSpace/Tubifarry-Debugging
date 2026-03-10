@@ -51,10 +51,15 @@ namespace Tubifarry.Indexers.Soulseek
                 SlskdSearchData searchTextData = SlskdSearchData.FromJson(indexerResponse.HttpRequest.ContentSummary);
                 HashSet<string>? ignoredUsers = GetIgnoredUsers(Settings.IgnoreListPath);
 
+                _logger.Debug($"Parsing search results: DirectoryExpansion={searchTextData.ExpandDirectory}, FilterAudioOnly={Settings.FilterUnfittingAlbums}, MinFiles={searchTextData.MinimumFiles}, MaxFiles={searchTextData.MaximumFiles}");
+
                 foreach (SlskdFolderData response in searchResponse.Responses)
                 {
                     if (ignoredUsers?.Contains(response.Username) == true)
+                    {
+                        _logger.Debug($"Ignoring response from {response.Username}: User is in ignore list.");
                         continue;
+                    }
 
                     IEnumerable<SlskdFileData> filteredFiles = SlskdFileData.GetFilteredFiles(response.Files, Settings.OnlyAudioFiles, Settings.IncludeFileExtensions);
 
@@ -75,6 +80,8 @@ namespace Tubifarry.Indexers.Soulseek
                             FileCount = response.FileCount
                         };
 
+                        _logger.Debug($"Parsed folder: {directoryGroup.Key} -> Artist: '{folderData.Artist}', Album: '{folderData.Album}', Year: '{folderData.Year}'");
+
                         IGrouping<string, SlskdFileData> finalGroup = directoryGroup;
                         if (searchTextData.ExpandDirectory)
                         {
@@ -85,21 +92,33 @@ namespace Tubifarry.Indexers.Soulseek
 
                         if (searchTextData.MinimumFiles > 0 || searchTextData.MaximumFiles.HasValue)
                         {
-                            int fileCount = Settings.FilterUnfittingAlbums
+                            bool filterAudioOnly = Settings.FilterUnfittingAlbums;
+                            int fileCount = filterAudioOnly
                                 ? finalGroup.Count(f => AudioFormatHelper.GetAudioCodecFromExtension(f.Extension ?? Path.GetExtension(f.Filename) ?? "") != AudioFormat.Unknown)
                                 : finalGroup.Count();
 
+                            _logger.Debug($"Evaluating track count for {directoryGroup.Key}: Found {fileCount} {(filterAudioOnly ? "audio tracks" : "files")} (Min: {searchTextData.MinimumFiles}, Max: {searchTextData.MaximumFiles?.ToString() ?? "N/A"})");
+
                             if (fileCount < searchTextData.MinimumFiles)
                             {
-                                _logger.Trace($"Filtered (too few): {directoryGroup.Key} ({fileCount}/{searchTextData.MinimumFiles} {(Settings.FilterUnfittingAlbums ? "audio tracks" : "files")})");
+                                _logger.Debug($"Filtered (too few): {directoryGroup.Key} ({fileCount}/{searchTextData.MinimumFiles} {(filterAudioOnly ? "audio tracks" : "files")})");
                                 continue;
                             }
 
                             if (searchTextData.MaximumFiles.HasValue && fileCount > searchTextData.MaximumFiles.Value)
                             {
-                                _logger.Trace($"Filtered (too many): {directoryGroup.Key} ({fileCount}/{searchTextData.MaximumFiles} {(Settings.FilterUnfittingAlbums ? "audio tracks" : "files")})");
+                                _logger.Debug($"Filtered (too many): {directoryGroup.Key} ({fileCount}/{searchTextData.MaximumFiles} {(filterAudioOnly ? "audio tracks" : "files")})");
                                 continue;
                             }
+
+                            _logger.Debug($"Accepted: {directoryGroup.Key} with {fileCount} {(filterAudioOnly ? "audio tracks" : "files")}");
+                        }
+
+                        int priority = folderData.CalculatePriority(searchTextData.MinimumFiles);
+                        if (priority == 0)
+                        {
+                            _logger.Debug($"Filtered (low priority/quality): {directoryGroup.Key} (Score: 0). Possible reasons: >50% locked files, or missing >50% of expected tracks ({searchTextData.MinimumFiles}).");
+                            continue;
                         }
 
                         AlbumData albumData = _itemsParser.CreateAlbumData(searchResponse.Id, finalGroup, searchTextData, folderData, Settings, searchTextData.MinimumFiles);
@@ -120,32 +139,41 @@ namespace Tubifarry.Indexers.Soulseek
         private IGrouping<string, SlskdFileData>? TryExpandDirectory(SlskdSearchData searchTextData, IGrouping<string, SlskdFileData> directoryGroup, SlskdFolderData folderData)
         {
             if (string.IsNullOrEmpty(searchTextData.Artist) || string.IsNullOrEmpty(searchTextData.Album))
+            {
+                _logger.Debug($"Skipping directory expansion for {directoryGroup.Key}: Artist or Album missing from search query.");
                 return null;
+            }
 
             bool artistMatch = Fuzz.PartialRatio(folderData.Artist, searchTextData.Artist) > 85;
             bool albumMatch = Fuzz.PartialRatio(folderData.Album, searchTextData.Album) > 85;
 
             if (!artistMatch || !albumMatch)
+            {
+                _logger.Debug($"Skipping directory expansion for {directoryGroup.Key}: Fuzzy match failed (Artist: {artistMatch}, Album: {albumMatch})");
                 return null;
+            }
 
             SlskdFileData? originalTrack = directoryGroup.FirstOrDefault(x => AudioFormatHelper.GetAudioCodecFromExtension(x.Extension?.ToLowerInvariant() ?? Path.GetExtension(x.Filename) ?? "") != AudioFormat.Unknown);
 
             if (originalTrack == null)
+            {
+                _logger.Debug($"Skipping directory expansion for {directoryGroup.Key}: No audio tracks found in initial directory.");
                 return null;
+            }
 
-            _logger.Trace($"Expanding directory for: {folderData.Username}:{directoryGroup.Key}");
+            _logger.Debug($"Expanding directory for: {folderData.Username}:{directoryGroup.Key}");
 
             SlskdRequestGenerator? requestGenerator = _indexer.GetExtendedRequestGenerator() as SlskdRequestGenerator;
             IGrouping<string, SlskdFileData>? expandedGroup = requestGenerator?.ExpandDirectory(folderData.Username, directoryGroup.Key, originalTrack).GetAwaiter().GetResult();
 
             if (expandedGroup != null)
             {
-                _logger.Debug($"Successfully expanded directory to {expandedGroup.Count()} files");
+                _logger.Debug($"Successfully expanded directory to {expandedGroup.Count()} files for {directoryGroup.Key}");
                 return expandedGroup;
             }
             else
             {
-                _logger.Warn($"Failed to expand directory for {folderData.Username}:{directoryGroup.Key}");
+                _logger.Debug($"Failed to expand directory for {folderData.Username}:{directoryGroup.Key}");
             }
             return null;
         }
