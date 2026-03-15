@@ -40,6 +40,15 @@
 		<IntermediateOutputPath>$(LidarrRootDir)_temp\obj\$(MSBuildProjectName)\$(Configuration)\</IntermediateOutputPath>
 		<OutputPath>$(LidarrRootDir)_temp\bin\$(Configuration)\$(MSBuildProjectName)\</OutputPath>
 
+		<!-- Force Lidarr submodule projects to use version 3.1.2.0 -->
+		<AssemblyVersion Condition="$(MSBuildProjectName.StartsWith('Lidarr.')) AND $(MSBuildProjectDirectory.Contains('Submodules\Lidarr'))">3.1.2.0</AssemblyVersion>
+		<Version Condition="$(MSBuildProjectName.StartsWith('Lidarr.')) AND $(MSBuildProjectDirectory.Contains('Submodules\Lidarr'))">3.1.2.0</Version>
+		<FileVersion Condition="$(MSBuildProjectName.StartsWith('Lidarr.')) AND $(MSBuildProjectDirectory.Contains('Submodules\Lidarr'))">3.1.2.0</FileVersion>
+
+		<!-- Handle version propagation for main plugin -->
+		<AssemblyVersion Condition="'$(PluginProject)'=='true' AND '$(AssemblyVersion)' == ''">$(Version)</AssemblyVersion>
+		<FileVersion Condition="'$(PluginProject)'=='true' AND '$(FileVersion)' == ''">$(Version)</FileVersion>
+
 		<!-- Output to _output and _tests respectively -->
 		<OutputPath Condition="'$(LidarrProject)'=='true'">$(LidarrRootDir)_output\</OutputPath>
 		<OutputPath Condition="'$(PluginProject)'=='true'">$(LidarrRootDir)_plugins\$(TargetFramework)\$(MSBuildProjectName)</OutputPath>

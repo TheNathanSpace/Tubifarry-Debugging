@@ -147,10 +147,11 @@ jobs:
           dotnet restore *.sln
           
           # Then build with all parameters
+          # NOTE: We do NOT pass -p:Version, -p:AssemblyVersion, or -p:FileVersion
+          # as global properties to avoid forcing them on submodule projects.
+          # These properties are now set within the projects or Directory.Build.props.
           dotnet build *.sln -c Release -f ${{ inputs.framework }} \
             -p:Version=${{ inputs.package_version }} \
-            -p:AssemblyVersion=${{ inputs.package_version }} \
-            -p:FileVersion=${{ inputs.package_version }} \
             -p:Branch="${{ inputs.git_branch }}" \
             -p:GitCommit="${{ inputs.git_commit }}" \
             -p:GitTag="${{ inputs.git_tag }}" \
