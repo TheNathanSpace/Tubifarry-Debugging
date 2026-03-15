@@ -147,19 +147,6 @@ jobs:
       - name: Fetch Minimum Lidarr Version from Submodule
         id: fetch_minimum_lidarr_version
         run: |
-          if [ -f "Submodules/Lidarr/azure-pipelines.yml" ]; then
-            RAW_YAML=$(cat Submodules/Lidarr/azure-pipelines.yml)
-          else
-            echo "Error: Submodules/Lidarr/azure-pipelines.yml not found!"
-            exit 1
-          fi
-          MAJOR_VERSION=$(echo "$RAW_YAML" | grep "majorVersion:" | head -n 1 | sed "s/.*majorVersion: *'\([^']*\)'.*/\1/")
-          echo "Extracted majorVersion: $MAJOR_VERSION"
-          DOT_COUNT=$(echo "$MAJOR_VERSION" | awk -F. '{print NF-1}')
-          if [ "$DOT_COUNT" -eq 2 ]; then
-            MINIMUM_LIDARR_VERSION="${MAJOR_VERSION}.0"
-          else
-            MINIMUM_LIDARR_VERSION="$MAJOR_VERSION"
-          fi
+          MINIMUM_LIDARR_VERSION="3.1.2.0"
           echo "Minimum Lidarr Version: $MINIMUM_LIDARR_VERSION"
           echo "minimum_lidarr_version=$MINIMUM_LIDARR_VERSION" >> $GITHUB_OUTPUT
